@@ -1,0 +1,171 @@
+---
+title: "Assignment 5: Text Classification with Naïve Bayes"
+author: "Hitesh Bahar"
+date: "November 1, 2018"
+output: 
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#1. Data Collection from the Guardian API.
+
+```{r}
+packages <- c("httr","rjson","jsonlite","dplyr","plyr","stringr","tm","e1071","SnowballC","caret")
+
+lapply(packages, library, character.only = TRUE)
+```
+* Download Data, Itereatively over six columns in the Guardian API. Append the data into a dataframe **data**
+```{r}
+api_key<-"d38d159c-3ed5-43b2-9caa-1eed5c665b7e"
+url <- "https://content.guardianapis.com/search?"
+pageSize<-50
+sections<- c("sport", "artanddesign", "business", "culture","technology","world")
+
+data = data.frame()
+
+for (item in sections)
+{
+  for (i in 1:20)
+  {
+    req <- fromJSON(paste0(url,("&order-by=newest&show-fields=body&page-size="),pageSize,("&page="),i,("&section="),item,("&api-key="),api_key))
+    test <- as.data.frame(req$response$results$fields,flatten = TRUE)
+    req$response$results$fields <- NULL
+    if("body" %in% colnames(req$response$results) ){
+      req$response$results <- rbind(req$response$results,test)
+    }else{
+      req$response$results <- cbind(req$response$results,test)
+    }
+    data <- rbind(data,req$response$results)
+  }
+}
+```
+
+* Summarizing the total number of rows collected in each article
+
+```{r}
+data %>%
+  group_by(data$sectionId) %>%
+  dplyr::summarise((count = n()))
+```
+
+#2. Data cleaning 
+```{r}
+# Converting all the column data to lowercase :
+
+columnName <- colnames(data)
+for (colN in columnName) {
+  data[[colN]] <- tolower(data[[colN]])
+}
+
+# To Remove HTML Tags and data cleaning(punctuations,digits) ,
+
+
+cleanHtmlStringFun <- function(htmlString) {
+  return(gsub("<.*?>", "", htmlString))
+}
+
+for (i in 1: nrow(data)){
+  data$body[i] <- (cleanHtmlStringFun(data$body[i]))
+  data$body[i] <- gsub("[[:punct:]]", "", data$body[i] )
+  data$body[i] <- gsub(pattern = "\\W", replace = " ",data$body[i])
+  data$body[i] <- gsub(pattern = "\\d", replace = " ",data$body[i])
+  data$body[i] <- gsub("[[:cntrl:]]", " ", data$body[i] )
+  data$body[i] <- str_squish(data$body[i])
+  
+}
+
+#Printing 3 sample cleaned body data.
+
+print(data[sample(nrow(data), 3), ])
+```
+
+#3. Tokenization
+```{r}
+# Removing Stopwords and single alphabets that are left over 
+
+for (i in 1: nrow(data)){
+  data$body[i] <- removeWords(data$body[i],stopwords())
+  data$body[i] <- gsub(pattern = "\\b[A-z]\\b{1}", replace = " ", data$body[i])
+  data$body[i] <- str_squish(data$body[i])
+}
+
+#Extracting Body Column from dataframe Data 
+
+bodyDataCorpus<- VCorpus(VectorSource(data$body))
+
+# Performing Cleaning through Corpus 
+bodyDataCorpusClean <- tm_map(bodyDataCorpus,removeNumbers)
+bodyDataCorpusClean <- tm_map(bodyDataCorpus,removeWords,stopwords('english'))
+bodyDataCorpusClean <- tm_map(bodyDataCorpus,removePunctuation)
+
+# Word Stemming 
+bodyDataCorpusClean <- tm_map(bodyDataCorpusClean,stemDocument)
+
+# Creating a DTM  with sparsity oh 97%
+bodyDTM <- DocumentTermMatrix(bodyDataCorpusClean)
+bodyDTM<- removeSparseTerms(bodyDTM,sparse = 0.97)
+bodyDTM<- as.matrix(bodyDTM)
+bodyDTM<- as.data.frame(bodyDTM)
+
+print(head(bodyDTM))
+```
+
+#4. Classification
+
+```{r}
+# Creating Featrure Vector
+data$sectionId <- as.factor(data$sectionId)
+
+#Creating Train and Test data  Using 70% Traing and 30% Testing\
+bodyDTMTrain <- bodyDTM[1:4200,]
+bodyDTMTest<- bodyDTM[4201:6000,]
+
+trainLabel <- data[1:4200,]$sectionId
+testLabel <- data[4201:6000,]$sectionId
+
+# Naive Bayes Classifier 
+guardian_Classifier <- naiveBayes(bodyDTMTrain,trainLabel)
+guardian_Classifier_test <- predict(guardian_Classifier,bodyDTMTest)
+
+#Confusion Matrix 
+confusionMatrix(guardian_Classifier_test,testLabel)
+```
+
+Here In the above resulst, it is only  predicting from **Class: Technology** and ** Class:World**, As the Y label mostly have this data. Hence we shoould go with random selection of data both on feature vector and the y_label.
+
+```{r}
+set.seed(143)
+smp_size <- floor(0.75 * nrow(data))
+len<- sample(seq_len(nrow(data)), size = smp_size)
+bodyDTMTrain <- bodyDTM[len,]
+bodyDTMTest<- bodyDTM[-len,]
+
+trainLabel <- data[len,]$sectionId
+testLabel <- data[-len,]$sectionId
+
+# Naive Bayes Classifier 
+guardian_Classifier <- naiveBayes(bodyDTMTrain,trainLabel)
+guardian_Classifier_test <- predict(guardian_Classifier,bodyDTMTest)
+```
+
+**Confusion Matrix**
+```{r}
+#Confusion Matrix 
+print(confusionMatrix(guardian_Classifier_test,testLabel))
+```
+
+* To improve the performance of  the model, we can do laplace smoothing by *1*. so that the probabilities will atleast not be **0**
+
+```{r}
+guardian_Classifier <- naiveBayes(bodyDTMTrain,trainLabel,laplace = 1)
+guardian_Classifier_test <- predict(guardian_Classifier,bodyDTMTest)
+```
+
+**Confusion Matrix  After Laplace Smoothing**
+```{r}
+print(confusionMatrix(guardian_Classifier_test,testLabel))
+```
